@@ -10,6 +10,8 @@ A compressing dynamic trie ([radix tree]) structure is used for efficient matchi
 
 ## Features
 
+- 
+
 ## Usage
 
 ```rust
@@ -124,6 +126,7 @@ It is inspired by the:
 - [httprouter]
 - [echo] router
 - [trekjs] router
+- [path-to-regexp]
 
 ## License
 
@@ -140,3 +143,4 @@ This project is licensed under either of
 [httprouter]: https://github.com/julienschmidt/httprouter
 [echo]: https://github.com/labstack/echo
 [trekjs]: https://github.com/trekjs/router
+[path-to-regexp]: https://github.com/pillarjs/path-to-regexp

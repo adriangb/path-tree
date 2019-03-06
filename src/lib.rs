@@ -80,22 +80,17 @@ where
                         if i == buf.len() {
                             break i;
                         }
-                        if '*' == buf[i] || '/' == buf[i] {
+
+                        // Must be ":a.:b"
+                        // Dont support ":a:b"
+                        if i > 2 && (':' == buf[i] || '*' == buf[i]) {
+                            break i - 1;
+                        }
+
+                        if '/' == buf[i] {
                             break i;
                         }
                         i += 1;
-                        // match buf[i] {
-                        //     '*' | '/' => {
-                        //         break i;
-                        //     }
-                        //     // pattern open
-                        //     // '(' => {}
-                        //     // pattern close
-                        //     // ')' => {}
-                        //     _ => {
-                        //         i += 1;
-                        //     }
-                        // }
                     });
                     match params.as_mut() {
                         Some(p) => {
@@ -112,18 +107,10 @@ where
                         if i == buf.len() {
                             break i;
                         }
-                        if '*' == buf[i] || ':' == buf[i] {
+                        if ':' == buf[i] || '*' == buf[i] {
                             break i;
                         }
                         i += 1;
-                        // match buf[i] {
-                        //     '*' | ':' => {
-                        //         break i;
-                        //     }
-                        //     _ => {
-                        //         i += 1;
-                        //     }
-                        // }
                     });
                     meta.kind = NodeKind::Static;
                 }
@@ -146,7 +133,7 @@ where
                 meta.data = Some(data);
             }
 
-            // Add ':' '*' to last
+            // Add '/' ':' '*' to last
             node = node.add_node_with(&mut buf, Some(meta), 0, ended, |&l, &c, indices| {
                 let mut j = l;
                 if 0 == j {
@@ -156,7 +143,6 @@ where
                 if '*' == c {
                     return j;
                 }
-
                 if '*' == indices[j - 1] {
                     j -= 1;
                 }
@@ -164,8 +150,14 @@ where
                 if ':' == c {
                     return j;
                 }
-
                 if 0 < j && ':' == indices[j - 1] {
+                    j -= 1;
+                }
+
+                if '/' == c {
+                    return j;
+                }
+                if 0 < j && '/' == indices[j - 1] {
                     j -= 1;
                 }
 
@@ -249,39 +241,78 @@ pub fn recognize<'a, R>(
             return Some((&node, values));
         }
         ':' => {
-            let mut i = 0;
-            let next = buf.split_off(loop {
-                if i == buf.len() {
-                    break i;
-                }
-                if '/' == buf[i] {
-                    break i;
-                }
-                i += 1;
-            });
+            let mut n = 0;
+            let l = node.indices.len();
+            let t = l + 1;
 
-            match values.as_mut() {
-                Some(v) => {
-                    v.push(buf);
-                }
-                None => {
-                    values.replace(vec![buf]);
-                }
-            }
+            while n < t {
+                let mut i = 0;
+                let mut bf = buf.clone();
+                let bl = bf.len();
 
-            if 0 == next.len() {
-                return Some((&node, values));
-            }
-
-            if 0 == node.indices.len() {
-                return None;
-            }
-
-            if let Some((n, v)) = recognize(&next, &node.nodes[0]).as_mut() {
-                if let Some(d) = v.as_mut() {
-                    values.as_mut().unwrap().append(d);
+                while i < bl {
+                    if n < l {
+                        if node.indices[n] == bf[0] {
+                            i += 1;
+                            while i < bl {
+                                if node.indices[n] != bf[i] {
+                                    i -= 1;
+                                    break;
+                                }
+                                i += 1;
+                            }
+                            break;
+                        } else if node.indices[n] == bf[i] {
+                            break;
+                        }
+                    }
+                    if '/' == bf[i] {
+                        break;
+                    }
+                    i += 1;
                 }
-                return Some((&n, values));
+
+                if n == l && i == bl {
+                    match values.as_mut() {
+                        Some(v) => {
+                            v.push(bf);
+                        }
+                        None => {
+                            values.replace(vec![bf]);
+                        }
+                    }
+                    return Some((&node, values));
+                }
+
+                if n < l && i < bl {
+                    let next = bf.split_off(i);
+                    if 0 < bf.len() {
+                        let mut vs = values.clone();
+                        match vs.as_mut() {
+                            Some(v) => {
+                                v.push(bf);
+                            }
+                            None => {
+                                vs.replace(vec![bf]);
+                            }
+                        }
+                        if let Some((n, v)) = recognize(&next, &node.nodes[n]) {
+                            if let Some(mut d) = v {
+                                match vs.as_mut() {
+                                    Some(v) => {
+                                        v.append(&mut d);
+                                    }
+                                    None => {
+                                        vs.replace(d);
+                                    }
+                                }
+                            }
+                            return Some((&n, vs));
+                        }
+                    }
+                }
+
+                n += 1;
             }
 
             return None;
@@ -323,7 +354,7 @@ pub fn recognize<'a, R>(
 
             n = 0;
             let mut has_colon = false;
-            if l > 0 && ':' == node.indices[l - 1] {
+            if 0 < l && ':' == node.indices[l - 1] {
                 l -= 1;
                 n = l;
                 has_colon = true;
@@ -440,7 +471,6 @@ mod tests {
         // println!("{:#?}", tree);
 
         let node = tree.find("/");
-        // println!("/ {:#?}", node);
         assert_eq!(node.is_some(), true);
         let res = node.unwrap();
         assert_eq!(res.0.path, ['/']);
@@ -450,35 +480,30 @@ mod tests {
         assert_eq!(res.1, None);
 
         let node = tree.find("/users");
-        // println!("/users: {:#?}", node);
         assert_eq!(node.is_some(), true);
         let res = node.unwrap();
         assert_eq!(res.0.path, ['u', 's', 'e', 'r', 's']);
         assert_eq!(res.1, None);
 
         let node = tree.find("/about");
-        // println!("/about {:#?}", node);
         assert_eq!(node.is_some(), true);
         let res = node.unwrap();
         assert_eq!(res.0.path, ['a', 'b', 'o', 'u', 't']);
         assert_eq!(res.1, None);
 
         let node = tree.find("/about/");
-        // println!("/about/ {:#?}", node);
         assert_eq!(node.is_some(), true);
         let res = node.unwrap();
         assert_eq!(res.0.path, ['/']);
         assert_eq!(res.1, None);
 
         let node = tree.find("/about/us");
-        // println!("/about/us {:#?}", node);
         assert_eq!(node.is_some(), true);
         let res = node.unwrap();
         assert_eq!(res.0.path, ['u', 's']);
         assert_eq!(res.1, None);
 
         let node = tree.find("/username");
-        // println!("/username {:#?}", node);
         assert_eq!(node.is_some(), true);
         let res = node.unwrap();
         assert_eq!(res.0.path, [':']);
@@ -488,7 +513,6 @@ mod tests {
         assert_eq!(res.1.unwrap(), [("username", "username")]);
 
         let node = tree.find("/user/s");
-        // println!("/user/s {:#?}", node);
         let res = node.unwrap();
         assert_eq!(res.0.path, ['*']);
         if let Some(meta) = &res.0.data {
@@ -497,7 +521,6 @@ mod tests {
         assert_eq!(res.1.unwrap(), [("any", "user/s")]);
 
         let node = tree.find("/users/fundon/repo");
-        // println!("/users/fundon/repo {:#?}", node);
         let res = node.unwrap();
         assert_eq!(res.0.path, [':']);
         if let Some(meta) = &res.0.data {
@@ -506,13 +529,11 @@ mod tests {
         assert_eq!(res.1.unwrap(), [("id", "fundon"), ("org", "repo")]);
 
         let node = tree.find("/users/fundon/repos");
-        // println!("/users/fundon/repos {:#?}", node);
         let res = node.unwrap();
         assert_eq!(res.0.path, "repos".chars().collect::<Vec<char>>());
         assert_eq!(res.1.unwrap(), [("user_id", "fundon")]);
 
         let node = tree.find("/users/fundon/repos/trek-rs");
-        // println!("/users/fundon/repos/233 {:#?}", node);
         let res = node.unwrap();
         assert_eq!(res.0.path, [':']);
         if let Some(meta) = &res.0.data {
@@ -521,13 +542,11 @@ mod tests {
         assert_eq!(res.1.unwrap(), [("user_id", "fundon"), ("id", "trek-rs"),]);
 
         let node = tree.find("/users/fundon/repos/trek-rs/");
-        // println!("/users/fundon/repos/233/ {:#?}", node);
         let res = node.unwrap();
         assert_eq!(res.0.path, ['*']);
         assert_eq!(res.1.unwrap(), [("user_id", "fundon"), ("id", "trek-rs"),]);
 
         let node = tree.find("/users/fundon/repos/trek-rs/noder");
-        // println!("/users/fundon/repos/trek-rs/noder {:#?}", node);
         let res = node.unwrap();
         assert_eq!(res.0.path, ['*']);
         assert_eq!(
@@ -536,7 +555,6 @@ mod tests {
         );
 
         let node = tree.find("/users/fundon/repos/trek-rs/noder/issues");
-        // println!("/users/fundon/repos/trek-rs/noder/issues {:#?}", node);
         let res = node.unwrap();
         assert_eq!(res.0.path, ['*']);
         if let Some(meta) = &res.0.data {
@@ -552,7 +570,6 @@ mod tests {
         );
 
         let node = tree.find("/users/repos/");
-        // println!("/users/repos/ {:#?}", node);
         let res = node.unwrap();
         assert_eq!(res.0.path, "*".chars().collect::<Vec<char>>());
         if let Some(meta) = &res.0.data {
@@ -561,7 +578,6 @@ mod tests {
         assert_eq!(res.1.is_none(), true);
 
         let node = tree.find("/about/as");
-        // println!("/about/as {:#?}", node);
         let res = node.unwrap();
         assert_eq!(res.0.path, ['*']);
         assert_eq!(res.1.unwrap(), [("any", "about/as")]);
@@ -592,65 +608,54 @@ mod tests {
         // println!("tree {:#?}", tree);
 
         let node = tree.find("/a");
-        // println!("/ {:#?}", node);
         assert!(node.is_some());
         let res = node.unwrap();
         let node = &res.0;
         assert_eq!(node.path, ['a']);
 
         let node = tree.find("/");
-        // println!("/ {:#?}", node);
         assert!(node.is_none());
 
         let node = tree.find("/hi");
-        // println!("/ {:#?}", node);
         assert!(node.is_some());
         let res = node.unwrap();
         let node = &res.0;
         assert_eq!(node.path, ['h', 'i']);
 
         let node = tree.find("/contact");
-        // println!("/ {:#?}", node);
         assert!(node.is_some());
         let res = node.unwrap();
         let node = &res.0;
         assert_eq!(node.path, "ntact".chars().collect::<Vec<char>>());
 
         let node = tree.find("/co");
-        // println!("/ {:#?}", node);
         assert!(node.is_some());
         let res = node.unwrap();
         let node = &res.0;
         assert_eq!(node.path, "o".chars().collect::<Vec<char>>());
 
         let node = tree.find("/con");
-        // println!("/ {:#?}", node);
         assert!(node.is_none());
 
         let node = tree.find("/cona");
-        // println!("/ {:#?}", node);
         assert!(node.is_none());
 
         let node = tree.find("/no");
-        // println!("/ {:#?}", node);
         assert!(node.is_none());
 
         let node = tree.find("/ab");
-        // println!("/ {:#?}", node);
         assert!(node.is_some());
         let res = node.unwrap();
         let node = &res.0;
         assert_eq!(node.path, ['b']);
 
         let node = tree.find("/α");
-        // println!("/ {:#?}", node);
         assert!(node.is_some());
         let res = node.unwrap();
         let node = &res.0;
         assert_eq!(node.path, ['α']);
 
         let node = tree.find("/β");
-        // println!("/ {:#?}", node);
         assert!(node.is_some());
         let res = node.unwrap();
         let node = &res.0;
@@ -691,11 +696,9 @@ mod tests {
         // println!("tree {:#?}", tree);
 
         let node = tree.find("/");
-        // println!("/ {:#?}", node);
         assert!(node.is_some());
 
         let node = tree.find("/cmd/test/");
-        // println!("/ {:#?}", node);
         assert!(node.is_some());
         let res = node.unwrap();
         let node = &res.0;
@@ -703,11 +706,9 @@ mod tests {
         assert_eq!(res.1.unwrap(), [("tool", "test")]);
 
         let node = tree.find("/cmd/test");
-        // println!("/ {:#?}", node);
         assert!(node.is_none());
 
         let node = tree.find("/cmd/test/3");
-        // println!("/ {:#?}", node);
         assert!(node.is_some());
         let res = node.unwrap();
         let node = &res.0;
@@ -715,7 +716,6 @@ mod tests {
         assert_eq!(res.1.unwrap(), [("tool", "test"), ("sub", "3")]);
 
         let node = tree.find("/src/");
-        // println!("/ {:#?}", node);
         assert!(node.is_some());
         let res = node.unwrap();
         let node = &res.0;
@@ -723,7 +723,6 @@ mod tests {
         assert_eq!(res.1, None);
 
         let node = tree.find("/src/some/file.png");
-        // println!("/ {:#?}", node);
         assert!(node.is_some());
         let res = node.unwrap();
         let node = &res.0;
@@ -731,11 +730,9 @@ mod tests {
         assert_eq!(res.1.unwrap(), [("filepath", "some/file.png")]);
 
         let node = tree.find("/search/");
-        // println!("/ {:#?}", node);
         assert!(node.is_some());
 
         let node = tree.find("/search/someth!ng+in+ünìcodé");
-        // println!("/ {:#?}", node);
         assert!(node.is_some());
         let res = node.unwrap();
         let node = &res.0;
@@ -743,11 +740,9 @@ mod tests {
         assert_eq!(res.1.unwrap(), [("query", "someth!ng+in+ünìcodé")]);
 
         let node = tree.find("/search/someth!ng+in+ünìcodé/");
-        // println!("/ {:#?}", node);
         assert!(node.is_none());
 
         let node = tree.find("/user_rust");
-        // println!("/ {:#?}", node);
         assert!(node.is_some());
         let res = node.unwrap();
         let node = &res.0;
@@ -755,7 +750,6 @@ mod tests {
         assert_eq!(res.1.unwrap(), [("name", "rust")]);
 
         let node = tree.find("/user_rust/about");
-        // println!("/ {:#?}", node);
         assert!(node.is_some());
         let res = node.unwrap();
         let node = &res.0;
@@ -763,7 +757,6 @@ mod tests {
         assert_eq!(res.1.unwrap(), [("name", "rust")]);
 
         let node = tree.find("/files/js/inc/framework.js");
-        // println!("/ {:#?}", node);
         assert!(node.is_some());
         let res = node.unwrap();
         let node = &res.0;
@@ -774,7 +767,6 @@ mod tests {
         );
 
         let node = tree.find("/info/gordon/public");
-        // println!("/ {:#?}", node);
         assert!(node.is_some());
         let res = node.unwrap();
         let node = &res.0;
@@ -782,7 +774,6 @@ mod tests {
         assert_eq!(res.1.unwrap(), [("user", "gordon")]);
 
         let node = tree.find("/info/gordon/project/rust");
-        // println!("/ {:#?}", node);
         assert!(node.is_some());
         let res = node.unwrap();
         let node = &res.0;
@@ -805,15 +796,12 @@ mod tests {
         // println!("tree {:#?}", tree);
 
         let node = tree.find("/users/");
-        // println!("/ {:#?}", node);
         assert!(node.is_none());
 
         let node = tree.find("/users/gordon/profile");
-        // println!("/ {:#?}", node);
         assert!(node.is_none());
 
         let node = tree.find("/users/gordon");
-        // println!("/ {:#?}", node);
         assert!(node.is_some());
         let res = node.unwrap();
         let node = &res.0;
@@ -824,7 +812,6 @@ mod tests {
         assert_eq!(res.1.unwrap(), [("id", "gordon")]);
 
         let node = tree.find("/users/you");
-        // println!("/ {:#?}", node);
         assert!(node.is_some());
         let res = node.unwrap();
         let node = &res.0;
@@ -856,32 +843,27 @@ mod tests {
         // println!("tree {:#?}", tree);
 
         let node = tree.find("/");
-        // println!("/ {:#?}", node);
         assert!(node.is_none());
 
         let node = tree.find("/a/b/c");
-        // println!("/ {:#?}", node);
         assert!(node.is_some());
         let res = node.unwrap();
         assert_eq!(res.0.path, ['b', '/', 'c']);
         assert_eq!(res.1, None);
 
         let node = tree.find("/a/c/d");
-        // println!("/ {:#?}", node);
         assert!(node.is_some());
         let res = node.unwrap();
         assert_eq!(res.0.path, ['d']);
         assert_eq!(res.1, None);
 
         let node = tree.find("/a/c/a");
-        // println!("/ {:#?}", node);
         assert!(node.is_some());
         let res = node.unwrap();
         assert_eq!(res.0.path, ['a']);
         assert_eq!(res.1, None);
 
         let node = tree.find("/a/c/e");
-        // println!("/ {:#?}", node);
         assert!(node.is_some());
         let res = node.unwrap();
         assert_eq!(res.0.path, ['/', 'c', '/', 'e']);
@@ -908,30 +890,24 @@ mod tests {
         // println!("tree {:#?}", tree);
 
         let node = tree.find("/");
-        // println!("/ {:#?}", node);
         assert!(node.is_none());
 
         let node = tree.find("/rust/");
-        // println!("/ {:#?}", node);
         assert!(node.is_none());
 
         let node = tree.find("/rust/let/");
-        // println!("/ {:#?}", node);
         assert!(node.is_none());
 
         let node = tree.find("/rust/let/const");
-        // println!("/ {:#?}", node);
         assert!(node.is_none());
 
         let node = tree.find("/rust/let");
-        // println!("/ {:#?}", node);
         assert!(node.is_some());
         let res = node.unwrap();
         assert_eq!(res.0.path, [':']);
         assert_eq!(res.1.unwrap(), [("lang", "rust"), ("keyword", "let")]);
 
         let node = tree.find("/rust");
-        // println!("/ {:#?}", node);
         assert!(node.is_some());
         let res = node.unwrap();
         assert_eq!(res.0.path, [':']);
@@ -951,43 +927,36 @@ mod tests {
         tree.insert("/src/*filepath", "* files");
 
         let node = tree.find("/src");
-        // println!("/ {:#?}", node);
         assert!(node.is_none());
 
         let node = tree.find("/src/");
-        // println!("/src/ {:#?}", node);
         assert!(node.is_some());
         let res = node.unwrap();
         assert_eq!(res.0.path, ['*']);
         assert!(res.1.is_none());
 
         let node = tree.find("/src/somefile.rs");
-        // println!("/src/somefile.rs {:#?}", node);
         assert!(node.is_some());
         let res = node.unwrap();
         assert_eq!(res.0.path, ['*']);
         assert_eq!(res.1.unwrap(), [("filepath", "somefile.rs")]);
 
         let node = tree.find("/src/subdir/somefile.rs");
-        // println!("/src/subdir/somefile.rs {:#?}", node);
         assert!(node.is_some());
         let res = node.unwrap();
         assert_eq!(res.0.path, ['*']);
         assert_eq!(res.1.unwrap(), [("filepath", "subdir/somefile.rs")]);
 
         let node = tree.find("/src.rs");
-        // println!("/src.rs {:#?}", node);
         assert!(node.is_none());
 
         let node = tree.find("/rust");
-        // println!("/rust {:#?}", node);
         assert!(node.is_none());
 
         // split node, 'src/' is key node
         tree.insert("/src/", "dir");
 
         let node = tree.find("/src/");
-        // println!("/src/ {:#?}", node);
         assert!(node.is_some());
         let res = node.unwrap();
         assert_eq!(res.0.path, "src/".chars().collect::<Vec<char>>());
@@ -1015,32 +984,27 @@ mod tests {
         // println!("tree {:#?}", tree);
 
         let node = tree.find("/");
-        // println!("/ {:#?}", node);
         assert!(node.is_none());
 
         let node = tree.find("/a/b/c");
-        // println!("/ {:#?}", node);
         assert!(node.is_some());
         let res = node.unwrap();
         assert_eq!(res.0.path, ['b', '/', 'c']);
         assert_eq!(res.1, None);
 
         let node = tree.find("/a/c/d");
-        // println!("/ {:#?}", node);
         assert!(node.is_some());
         let res = node.unwrap();
         assert_eq!(res.0.path, ['d']);
         assert_eq!(res.1, None);
 
         let node = tree.find("/a/c/a");
-        // println!("/ {:#?}", node);
         assert!(node.is_some());
         let res = node.unwrap();
         assert_eq!(res.0.path, ['a']);
         assert_eq!(res.1, None);
 
         let node = tree.find("/a/c/e");
-        // println!("/ {:#?}", node);
         assert!(node.is_some());
         let res = node.unwrap();
         assert_eq!(res.0.path, ['*']);
@@ -1065,7 +1029,6 @@ mod tests {
         // println!("tree {:#?}", tree);
 
         let node = tree.find("/");
-        // println!("/ {:#?}", node);
         assert!(node.is_some());
         let res = node.unwrap();
         assert_eq!(res.0.path, ['/']);
@@ -1075,7 +1038,6 @@ mod tests {
         }
 
         let node = tree.find("/download");
-        // println!("/ {:#?}", node);
         assert!(node.is_some());
         let res = node.unwrap();
         assert_eq!(res.0.path, ['*']);
@@ -1086,7 +1048,6 @@ mod tests {
         assert_eq!(res.1.unwrap(), [("", "download")]);
 
         let node = tree.find("/users/fundon");
-        // println!("/ {:#?}", node);
         assert!(node.is_some());
         let res = node.unwrap();
         assert_eq!(res.0.path, ['*']);
@@ -1095,5 +1056,139 @@ mod tests {
             assert_eq!(meta.data.unwrap()(), 3);
         }
         assert_eq!(res.1.unwrap(), [("", "fundon")]);
+    }
+
+    #[test]
+    fn multi_named_parameters_in_one_segment() {
+        // Pattern: /:name.:ext
+        let mut tree = PathTree::<usize>::new("/", NodeMetadata::new());
+
+        tree.insert("/:name", 0);
+        tree.insert("/:name.:ext", 1);
+        tree.insert("/:name.:a0.:b0", 3);
+        tree.insert("/:name.:a0-:b1", 4);
+        tree.insert("/:name-:a1-:b1", 5);
+        tree.insert("/:name-*any", 2);
+        tree.insert("/:name/:age", 6);
+
+        // println!("tee: {:#?}", tree);
+
+        let node = tree.find("/main");
+        assert!(node.is_some());
+        let res = node.unwrap();
+        assert_eq!(res.0.path, [':']);
+        assert_eq!(res.0.data.is_some(), true);
+        if let Some(meta) = &res.0.data {
+            assert_eq!(meta.data.unwrap(), 0);
+        }
+        assert_eq!(res.1.unwrap(), [("name", "main")]);
+
+        let node = tree.find("/main.rs");
+        assert!(node.is_some());
+        let res = node.unwrap();
+        assert_eq!(res.0.path, [':']);
+        assert_eq!(res.0.data.is_some(), true);
+        if let Some(meta) = &res.0.data {
+            assert_eq!(meta.data.unwrap(), 1);
+        }
+        assert_eq!(res.1.unwrap(), [("name", "main"), ("ext", "rs")]);
+
+        let node = tree.find("/main.rs-build");
+        assert!(node.is_some());
+        let res = node.unwrap();
+        assert_eq!(res.0.path, [':']);
+        assert_eq!(res.0.data.is_some(), true);
+        if let Some(meta) = &res.0.data {
+            assert_eq!(meta.data.unwrap(), 4);
+        }
+        assert_eq!(
+            res.1.unwrap(),
+            [("name", "main"), ("a0", "rs"), ("b1", "build")]
+        );
+
+        let node = tree.find("/main.rs.build");
+        assert!(node.is_some());
+        let res = node.unwrap();
+        assert_eq!(res.0.path, [':']);
+        assert_eq!(res.0.data.is_some(), true);
+        if let Some(meta) = &res.0.data {
+            assert_eq!(meta.data.unwrap(), 3);
+        }
+        assert_eq!(
+            res.1.unwrap(),
+            [("name", "main"), ("a0", "rs"), ("b0", "build")]
+        );
+
+        let node = tree.find("/main-rs-build");
+        assert!(node.is_some());
+        let res = node.unwrap();
+        assert_eq!(res.0.path, [':']);
+        assert_eq!(res.0.data.is_some(), true);
+        if let Some(meta) = &res.0.data {
+            assert_eq!(meta.data.unwrap(), 5);
+        }
+        assert_eq!(
+            res.1.unwrap(),
+            [("name", "main"), ("a1", "rs"), ("b1", "build")]
+        );
+
+        let node = tree.find("/main-rs-build/other");
+        assert!(node.is_some());
+        let res = node.unwrap();
+        assert_eq!(res.0.path, ['*']);
+        assert_eq!(res.0.data.is_some(), true);
+        if let Some(meta) = &res.0.data {
+            assert_eq!(meta.data.unwrap(), 2);
+        }
+        assert_eq!(
+            res.1.unwrap(),
+            [("name", "main"), ("any", "rs-build/other")]
+        );
+
+        let node = tree.find("/main/rs");
+        assert!(node.is_some());
+        let res = node.unwrap();
+        assert_eq!(res.0.path, [':']);
+        assert_eq!(res.0.data.is_some(), true);
+        if let Some(meta) = &res.0.data {
+            assert_eq!(meta.data.unwrap(), 6);
+        }
+        assert_eq!(res.1.unwrap(), [("name", "main"), ("age", "rs")]);
+    }
+
+    #[test]
+    fn git_compare() {
+        // Pattern: ":rev_a...:rev_b"
+        let mut tree = PathTree::<usize>::new("/", NodeMetadata::new());
+
+        tree.insert("/:rev_a.:dot.:rev_b", 0);
+
+        // println!("tee: {:#?}", tree);
+
+        let node = tree.find("/master...dev");
+        assert!(node.is_some());
+        let res = node.unwrap();
+        assert_eq!(res.0.path, [':']);
+        assert_eq!(res.0.data.is_some(), true);
+        if let Some(meta) = &res.0.data {
+            assert_eq!(meta.data.unwrap(), 0);
+        }
+        assert_eq!(
+            res.1.unwrap(),
+            [("rev_a", "master"), ("dot", "."), ("rev_b", "dev")]
+        );
+
+        let node = tree.find("/master.a.dev");
+        assert!(node.is_some());
+        let res = node.unwrap();
+        assert_eq!(res.0.path, [':']);
+        assert_eq!(res.0.data.is_some(), true);
+        if let Some(meta) = &res.0.data {
+            assert_eq!(meta.data.unwrap(), 0);
+        }
+        assert_eq!(
+            res.1.unwrap(),
+            [("rev_a", "master"), ("dot", "a"), ("rev_b", "dev")]
+        );
     }
 }
