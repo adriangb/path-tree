@@ -13,7 +13,7 @@ pub struct Node<T> {
     data: Option<T>,
     indices: Option<String>,
     nodes: Option<Vec<Self>>,
-    params: Option<Vec<String>>,
+    params: Option<Vec<u8>>,
 }
 
 impl<T> Default for Node<T> {
@@ -203,7 +203,10 @@ impl<T> Node<T> {
 }
 
 #[derive(Clone, Debug)]
-pub struct PathTree<T>(Node<T>);
+pub struct PathTree<T> {
+    tree: Node<T>,
+    params: Vec<String>,
+}
 
 impl<T> Default for PathTree<T> {
     #[inline]
@@ -215,13 +218,16 @@ impl<T> Default for PathTree<T> {
 impl<T> PathTree<T> {
     #[inline]
     pub fn new() -> Self {
-        Self(Node::new(NodeKind::Static("/".to_owned())))
+        Self {
+            tree: Node::new(NodeKind::Static("/".to_owned())),
+            params: Vec::new(),
+        }
     }
 
     pub fn insert(&mut self, mut path: &str, data: T) -> &mut Self {
         let mut next = true;
-        let mut node = &mut self.0;
-        let mut params: Option<Vec<String>> = None;
+        let mut node = &mut self.tree;
+        let mut params: Option<Vec<u8>> = None;
 
         path = path.trim_start_matches('/');
 
@@ -261,7 +267,17 @@ impl<T> PathTree<T> {
                         next = false;
                         kind = NodeKind::CatchAll;
                     }
-                    params.get_or_insert_with(Vec::new).push(suffix.to_owned());
+
+                    let param = suffix.to_owned();
+                    params.get_or_insert_with(Vec::new).push(
+                        match self.params.binary_search(&param) {
+                            Ok(n) => n,
+                            _ => {
+                                self.params.push(param);
+                                self.params.len() - 1
+                            }
+                        } as u8,
+                    );
                     node = node.add_node_dynamic(c, kind);
                 }
                 None => {
@@ -278,14 +294,15 @@ impl<T> PathTree<T> {
     }
 
     pub fn find<'a>(&'a self, path: &'a str) -> Option<(&T, Vec<(&str, &str)>)> {
-        match self.0.find(path) {
+        match self.tree.find(path) {
             Some((node, values)) => match (node.data.as_ref(), node.params.as_ref()) {
                 (Some(data), Some(params)) => Some((
                     data,
                     params
                         .iter()
+                        .map(|n| self.params[*n as usize].as_str())
                         .zip(values.iter())
-                        .map(|(a, b)| (a.as_str(), *b))
+                        .map(|(a, b)| (a, *b))
                         .collect(),
                 )),
                 (Some(data), None) => Some((data, Vec::new())),
