@@ -12,7 +12,7 @@ use std::mem;
 
 #[derive(Clone, Debug)]
 pub enum NodeKind {
-    Static(String),
+    Static(Vec<u8>),
     Parameter,
     CatchAll,
 }
@@ -21,14 +21,14 @@ pub enum NodeKind {
 pub struct Node<T> {
     kind: NodeKind,
     data: Option<T>,
-    indices: Option<String>,
     nodes: Option<Vec<Self>>,
-    params: Option<Vec<String>>,
+    indices: Option<Vec<u8>>,
+    params: Option<Vec<Vec<u8>>>,
 }
 
 impl<T> Default for Node<T> {
     fn default() -> Self {
-        Self::new(NodeKind::Static(String::new()))
+        Self::new(NodeKind::Static(Vec::new()))
     }
 }
 
@@ -37,14 +37,14 @@ impl<T> Node<T> {
         Self {
             kind,
             data: None,
+            nodes: None,
             params: None,
             indices: None,
-            nodes: None,
         }
     }
 
-    fn add_node(&mut self, c: char, kind: NodeKind) -> &mut Self {
-        let indices: &mut String = self.indices.get_or_insert_with(String::new);
+    fn add_node(&mut self, c: u8, kind: NodeKind) -> &mut Self {
+        let indices: &mut Vec<u8> = self.indices.get_or_insert_with(Vec::new);
         let nodes: &mut Vec<Node<T>> = self.nodes.get_or_insert_with(Vec::new);
 
         match position(indices, c) {
@@ -60,18 +60,23 @@ impl<T> Node<T> {
         }
     }
 
-    pub fn add_node_static(&mut self, p: &str) -> &mut Self {
-        self.add_node(p.chars().next().unwrap(), NodeKind::Static(p.to_owned()))
+    pub fn add_node_static(&mut self, p: &[u8]) -> &mut Self {
+        if let Some(c) = p.iter().next() {
+            self.add_node(*c, NodeKind::Static(p.to_vec()))
+        } else {
+            self
+        }
     }
 
-    pub fn add_node_dynamic(&mut self, c: char, kind: NodeKind) -> &mut Self {
+    pub fn add_node_dynamic(&mut self, c: u8, kind: NodeKind) -> &mut Self {
         self.add_node(c, kind)
     }
 
-    pub fn insert(&mut self, p: &str) -> &mut Self {
+    pub fn insert(&mut self, p: &[u8]) -> &mut Self {
         match self.kind {
             NodeKind::Static(ref mut s) if s.len() == 0 => {
-                *s += p;
+                // *s += p;
+                s.extend_from_slice(p);
                 self
             }
             NodeKind::Static(ref mut s) => {
@@ -85,7 +90,7 @@ impl<T> Node<T> {
                         data: None,
                         params: None,
                         nodes: Some(Vec::new()),
-                        indices: Some(s.chars().next().unwrap().to_string()),
+                        indices: s.iter().next().map(|c| [*c].to_vec()),
                         kind: NodeKind::Static(np.to_owned()),
                     };
                     mem::swap(self, &mut node);
@@ -103,7 +108,7 @@ impl<T> Node<T> {
         }
     }
 
-    pub fn find<'a>(&'a self, mut p: &'a str) -> Option<(&'a Self, Vec<&'a str>)> {
+    pub fn find<'a>(&'a self, mut p: &'a [u8]) -> Option<(&'a Self, Vec<&'a [u8]>)> {
         let mut params = Vec::new();
 
         match self.kind {
@@ -121,10 +126,10 @@ impl<T> Node<T> {
                         // Ended `/` `/*any`
                         if self.data.is_none()
                             && self.indices.is_some()
-                            && '/' == s.chars().last().unwrap()
+                            && b'/' == *s.iter().last().unwrap()
                         {
                             &self.nodes.as_ref().unwrap()
-                                [position(self.indices.as_ref().unwrap(), '*')?]
+                                [position(self.indices.as_ref().unwrap(), b'*')?]
                         } else {
                             self
                         },
@@ -137,7 +142,7 @@ impl<T> Node<T> {
                     p = &p[l..];
 
                     // Static
-                    if let Some(i) = position(indices, p.chars().next().unwrap()) {
+                    if let Some(i) = position(indices, *p.iter().next().unwrap()) {
                         if let Some((n, ps)) = nodes[i].find(p).as_mut() {
                             params.append(ps);
 
@@ -147,10 +152,10 @@ impl<T> Node<T> {
                                     NodeKind::Static(s)
                                         if n.data.is_none()
                                             && n.indices.is_some()
-                                            && '/' == s.chars().last().unwrap() =>
+                                            && b'/' == *s.iter().last().unwrap() =>
                                     {
                                         &n.nodes.as_ref().unwrap()
-                                            [position(n.indices.as_ref().unwrap(), '*')?]
+                                            [position(n.indices.as_ref().unwrap(), b'*')?]
                                     }
                                     _ => n,
                                 },
@@ -160,7 +165,7 @@ impl<T> Node<T> {
                     }
 
                     // Named Parameter
-                    if let Some(i) = position(indices, ':') {
+                    if let Some(i) = position(indices, b':') {
                         if let Some((n, ps)) = nodes[i].find(p).as_mut() {
                             params.append(ps);
                             return Some((n, params));
@@ -168,7 +173,7 @@ impl<T> Node<T> {
                     }
 
                     // Catch-All Parameter
-                    if let Some(i) = position(indices, '*') {
+                    if let Some(i) = position(indices, b'*') {
                         if let Some((n, ps)) = nodes[i].find(p).as_mut() {
                             params.append(ps);
                             return Some((n, params));
@@ -178,7 +183,7 @@ impl<T> Node<T> {
                     None
                 }
             }
-            NodeKind::Parameter => match position(p, '/') {
+            NodeKind::Parameter => match position(p, b'/') {
                 Some(i) => {
                     let indices = self.indices.as_ref()?;
 
@@ -186,7 +191,7 @@ impl<T> Node<T> {
                     p = &p[i..];
 
                     let (n, ref mut ps) = self.nodes.as_ref().unwrap()
-                        [position(indices, p.chars().next().unwrap())?]
+                        [position(indices, p.iter().next().cloned().unwrap())?]
                     .find(p)?;
 
                     params.append(ps);
@@ -216,15 +221,14 @@ impl<T> Default for PathTree<T> {
 
 impl<T> PathTree<T> {
     pub fn new() -> Self {
-        Self(Node::new(NodeKind::Static("/".to_owned())))
+        Self(Node::new(NodeKind::Static([47].to_vec())))
     }
 
-    pub fn insert(&mut self, mut path: &str, data: T) -> &mut Self {
+    pub fn insert(&mut self, path: &str, data: T) -> &mut Self {
         let mut next = true;
         let mut node = &mut self.0;
-        let mut params: Option<Vec<String>> = None;
-
-        path = path.trim_start_matches('/');
+        let mut params: Option<Vec<Vec<u8>>> = None;
+        let mut path = path.trim_start_matches('/').as_bytes();
 
         if path.len() == 0 {
             node.data = Some(data);
@@ -232,7 +236,7 @@ impl<T> PathTree<T> {
         }
 
         while next {
-            match path.chars().position(has_colon_or_star) {
+            match path.iter().position(has_colon_or_star) {
                 Some(i) => {
                     let kind: NodeKind;
                     let mut prefix = &path[..i];
@@ -245,9 +249,9 @@ impl<T> PathTree<T> {
                     prefix = &suffix[..1];
                     suffix = &suffix[1..];
 
-                    let c = prefix.chars().next().unwrap();
-                    if c == ':' {
-                        match suffix.chars().position(has_star_or_slash) {
+                    let c = prefix.iter().next().cloned().unwrap();
+                    if c == b':' {
+                        match suffix.iter().position(has_star_or_slash) {
                             Some(i) => {
                                 path = &suffix[i..];
                                 suffix = &suffix[..i];
@@ -261,7 +265,7 @@ impl<T> PathTree<T> {
                         next = false;
                         kind = NodeKind::CatchAll;
                     }
-                    params.get_or_insert_with(Vec::new).push(suffix.to_owned());
+                    params.get_or_insert_with(Vec::new).push(suffix.to_vec());
                     node = node.add_node_dynamic(c, kind);
                 }
                 None => {
@@ -277,7 +281,10 @@ impl<T> PathTree<T> {
         self
     }
 
-    pub fn find<'a>(&'a self, path: &'a str) -> Option<(&'a T, Vec<(&'a str, &'a str)>)> {
+    pub fn find_as_bytes<'a>(
+        &'a self,
+        path: &'a [u8],
+    ) -> Option<(&'a T, Vec<(&'a [u8], &'a [u8])>)> {
         match self.0.find(path) {
             Some((node, values)) => match (node.data.as_ref(), node.params.as_ref()) {
                 (Some(data), Some(params)) => Some((
@@ -285,7 +292,7 @@ impl<T> PathTree<T> {
                     params
                         .iter()
                         .zip(values.iter())
-                        .map(|(a, b)| (a.as_str(), *b))
+                        .map(|(a, b)| (a.as_slice(), *b))
                         .collect(),
                 )),
                 (Some(data), None) => Some((data, Vec::new())),
@@ -294,28 +301,44 @@ impl<T> PathTree<T> {
             None => None,
         }
     }
+
+    pub fn find<'a>(&'a self, path: &'a str) -> Option<(&'a T, Vec<(String, String)>)> {
+        self.find_as_bytes(path.as_bytes()).map(|(n, v)| {
+            (
+                n,
+                v.iter()
+                    .map(|(a, b)| {
+                        (
+                            String::from_utf8(a.to_vec()).unwrap(),
+                            String::from_utf8(b.to_vec()).unwrap(),
+                        )
+                    })
+                    .collect(),
+            )
+        })
+    }
 }
 
 #[inline]
-fn has_colon_or_star(c: char) -> bool {
-    (c == ':') | (c == '*')
+fn has_colon_or_star(c: &u8) -> bool {
+    (*c == b':') | (*c == b'*')
 }
 
 #[inline]
-fn has_star_or_slash(c: char) -> bool {
-    (c == '*') | (c == '/')
+fn has_star_or_slash(c: &u8) -> bool {
+    (*c == b'*') | (*c == b'/')
 }
 
 #[inline]
-fn position(p: &str, c: char) -> Option<usize> {
-    p.chars().position(|x| x == c)
+fn position(p: &[u8], c: u8) -> Option<usize> {
+    p.iter().position(|x| *x == c)
 }
 
 #[inline]
-fn loc(s: &str, p: &str) -> String {
-    s.chars()
-        .zip(p.chars())
+fn loc(s: &[u8], p: &[u8]) -> Vec<u8> {
+    s.iter()
+        .zip(p.iter())
         .take_while(|(a, b)| a == b)
-        .map(|v| v.0)
+        .map(|v| *v.0)
         .collect()
 }
